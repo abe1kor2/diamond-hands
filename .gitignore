@@ -1,0 +1,10 @@
+# Personal settings and trading state never leave this machine
+config.yaml
+state/
+logs/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

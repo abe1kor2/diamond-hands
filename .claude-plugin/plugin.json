@@ -1,0 +1,6 @@
+{
+  "name": "diamond-hands",
+  "version": "0.1.0",
+  "description": "A facts-first swing-trading partner: plans, stops, news, crowd sentiment, and volume/candle analytics, running around the clock. Reports what matched a rule; the trader makes every call.",
+  "license": "MIT"
+}

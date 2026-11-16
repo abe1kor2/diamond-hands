@@ -1,0 +1,70 @@
+# Copy this file to config.yaml and fill in your own values.
+# config.yaml is git-ignored, so your positions never get pushed.
+# Every number below is an EXAMPLE placeholder, not real data.
+
+timezone: America/St_Johns          # all times reported in this zone
+markets: [TSX, NYSE, NASDAQ]
+base_currency: CAD                  # CAD or USD
+fx_source: bank_of_canada           # for USD->CAD conversion
+
+# Equity of your real swing account, in base_currency. Used for the risk card's
+# "% of equity", size check and risk check. Leave blank and those checks show "?".
+account_equity: 50000
+
+core_holdings:                      # long-term, never traded, fund-level news only
+  - XEQT.TO
+  - VEQT.TO
+  - VFV.TO
+
+# Read ONCE by `dh init` to seed the append-only trade log (state/plans.jsonl).
+# After that, report trades with `dh trade buy|sell ...`; state/holdings.yaml
+# is regenerated from the log.
+swing_holdings:
+  - ticker: NVDA
+    shares: 97
+    avg_cost: 35.29
+    stop_close_below: 31.80
+    target_1: 39.00                 # sell half here
+    out_by: 2026-12-11
+    entry_date: 2026-11-02          # optional; used for hold-length checks
+    account: real                   # optional label (e.g. TFSA, RRSP); "paper" is reserved
+
+watchlist: [AMD, AVGO, MRVL, ARM, TSM, QCOM, INTC, MU]   # competitors / ideas
+
+benchmarks:                         # for relative strength
+  us_index: ^GSPC
+  ca_index: ^GSPTSE
+  sector:                           # optional per-ticker sector index
+    NVDA: ^SOX
+    AMD: ^SOX
+    AVGO: ^SOX
+    MRVL: ^SOX
+    ARM: ^SOX
+    TSM: ^SOX
+    QCOM: ^SOX
+    INTC: ^SOX
+    MU: ^SOX
+
+rules:
+  hold_weeks: [4, 8]
+  target_1_pct: [10, 12]            # sell half
+  t1_sell_fraction: 0.5
+  after_target_1: breakeven_then_trail_higher_swing_lows
+  stop_type: close_based            # intraday breaks do not trigger
+  stop_distance_pct: [7, 10]
+  trailing_lock_in_after_gain_pct: 10   # once up 10%, stop only moves up
+  swing_lookback: 2                 # bars on each side that define a swing high/low
+  risk_per_trade_pct: 1
+  max_position_pct: 10
+  max_open_ideas: 8
+
+paper_book:
+  enabled: true
+  starting_capital: 100000
+  benchmark: VFV.TO                 # yardstick only
+
+alerts:
+  near_stop_band_pct: 1.5
+  relative_volume_flag: 1.5         # x the 20-day average
+  big_candle_body_pct: 3.0
+  sentiment_shift_flag: 20          # point swing in bull-bear score (sentiment module, planned)
