@@ -12,7 +12,7 @@ from . import DISCLAIMER, __version__
 from .alerts import Alert, Dispatcher
 from .analytics import Analytics, compute as compute_analytics
 from .config import Config, ConfigError, infer_currency, load_config
-from .data import stooq, yahoo
+from .data import twelvedata, yahoo
 from .data.fx import FxConverter, usdcad
 from .data.http import DataError
 from .indicators import pct
@@ -35,16 +35,16 @@ class App:
         self._cache: dict[tuple, Series | DataError] = {}
 
     def series(self, symbol: str, range_: str = "2y", interval: str = "1d", prepost: bool = False) -> Series:
-        """Yahoo first; Stooq as backup for daily US bars. Results (and failures) are cached per run."""
+        """Yahoo first; Twelve Data as backup for daily bars. Results (and failures) are cached per run."""
         key = (symbol.upper(), range_, interval, prepost)
         if key not in self._cache:
             try:
                 self._cache[key] = yahoo.fetch_chart(symbol, range_, interval, prepost)
             except DataError as e:
                 result: Series | DataError = e
-                if interval == "1d" and stooq.covers(symbol):
+                if interval == "1d" and twelvedata.covers(symbol):
                     try:
-                        result = stooq.fetch_daily(symbol)
+                        result = twelvedata.fetch_daily(symbol)
                     except DataError as e2:
                         result = DataError(e.source, f"{e.detail}; backup {e2}")
                 self._cache[key] = result
@@ -387,23 +387,26 @@ def cmd_analytics(app: App, args) -> int:
 
 
 def _cross_check(sym: str, ys: Series, now: datetime) -> str | None:
-    """Compare Yahoo's last final close with Stooq's; report gaps of 0.1% or more."""
-    if ys.source != yahoo.SOURCE or not stooq.covers(sym):
+    """Compare Yahoo's last final close with Twelve Data's; report gaps of 0.1% or more.
+
+    Skipped when no Twelve Data key is set.
+    """
+    if ys.source != yahoo.SOURCE or not twelvedata.covers(sym) or not twelvedata.api_key():
         return None
     final = [b for b in ys.bars if is_final(ys, b, now)]
     if not final:
         return None
     yb = final[-1]
     try:
-        ss = stooq.fetch_daily(sym)
+        ts = twelvedata.fetch_daily(sym)
     except DataError as e:
         return f"[{sym}] price cross-check skipped: {e}"
-    sb = next((b for b in reversed(ss.bars) if b.day == yb.day), None)
-    if sb is None:
-        return f"[{sym}] price cross-check: Stooq has no {fmt_day(yb.day)} bar yet."
-    gap = pct(yb.close, sb.close)
+    tb = next((b for b in reversed(ts.bars) if b.day == yb.day), None)
+    if tb is None:
+        return f"[{sym}] price cross-check: Twelve Data has no {fmt_day(yb.day)} bar yet."
+    gap = pct(yb.close, tb.close)
     if abs(gap) >= 0.1:
-        return f"[{sym}] Price gap on {fmt_day(yb.day)}: Yahoo close {yb.close:.2f} vs Stooq {sb.close:.2f} ({gap:+.2f}%). Using Yahoo (primary)."
+        return f"[{sym}] Price gap on {fmt_day(yb.day)}: Yahoo close {yb.close:.2f} vs Twelve Data {tb.close:.2f} ({gap:+.2f}%). Using Yahoo (primary)."
     return None
 
 

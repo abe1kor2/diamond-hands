@@ -17,6 +17,7 @@ commands/                    slash commands
 diamond_hands/               dh CLI (Python)
 tests/                       pytest suite
 config.example.yaml          your rules and thresholds
+.env.example                 optional API keys (Twelve Data backup)
 scripts/crontab.example      24/7 schedule
 state/, logs/                created at runtime; git-ignored
 ```
@@ -61,7 +62,22 @@ The CLI works on its own too: `uv run dh --help`.
 See `scripts/crontab.example`. Each job runs `claude --plugin-dir . -p "/diamond-hands:<command>"` from the repo.
 
 ## Data sources
-Yahoo Finance (prices, earnings dates), Stooq (backup for US tickers), Bank of Canada Valet (USD/CAD). All free and public. When a source fails, the output says `no data from <source>` and skips that check.
+| Source | Used for | Key |
+|---|---|---|
+| Yahoo Finance | Prices (daily, 5-minute, pre/post), earnings dates | none |
+| Twelve Data | Backup daily bars and close cross-check for US tickers | optional, free |
+| Bank of Canada Valet | Official USD/CAD rate | none |
+
+Yahoo's API is public but unofficial and sometimes rate-limits whole networks (HTTP 429). For a backup, get a free key at [twelvedata.com](https://twelvedata.com) (8 requests/minute, 800/day, US listings; TSX needs a paid plan) and put it in `.env`:
+
+```sh
+cp .env.example .env    # then set TWELVEDATA_API_KEY=...
+```
+
+When a source fails, the output says `no data from <source>` and skips that check.
+
+## License
+[MIT](LICENSE)
 
 ## Tests
 ```sh

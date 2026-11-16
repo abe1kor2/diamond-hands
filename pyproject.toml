@@ -2,6 +2,8 @@
 name = "diamond-hands"
 version = "0.1.0"
 description = "Facts-first swing-trading partner: trade plans, risk cards, price/level watch, analytics, paper book."
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0",
