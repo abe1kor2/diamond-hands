@@ -6,7 +6,7 @@ description: Upcoming events that touch the trader's holdings and the market. Us
 # Calendar
 
 **Status: mostly not built yet.** What works today:
-- Earnings dates inside each hold: on the risk card (`uv run dh risk-card TICKER`), from the Yahoo Finance calendar.
+- Earnings dates inside each hold: on the risk card (`uv run dh risk-card TICKER`), from Nasdaq (Yahoo Finance as fallback). When no date has been announced, the card says so.
 - Out-by dates: `uv run dh plan show`.
 
 For anything else, reply "calendar: not built yet".

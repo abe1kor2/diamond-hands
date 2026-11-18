@@ -5,18 +5,19 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable
 from datetime import date, datetime
 from pathlib import Path
 
 from . import DISCLAIMER, __version__
 from .alerts import Alert, Dispatcher
-from .analytics import Analytics, compute as compute_analytics
+from .analytics import Analytics, compute as compute_analytics, ext_hours_summary
 from .config import Config, ConfigError, infer_currency, load_config
-from .data import twelvedata, yahoo
+from .data import nasdaq, yahoo
 from .data.fx import FxConverter, usdcad
 from .data.http import DataError
 from .indicators import pct
-from .models import Series, is_final
+from .models import Quote, Series, is_final
 from .paper import PaperBook
 from .plans import PAPER, CardContext, Plan, PlanBook, plan_line, risk_card, sized_shares, trigger_label
 from .store import Store, new_id
@@ -25,6 +26,8 @@ from .watch import check_plan
 
 
 class App:
+    """Shared state for one command run. Prices come from Nasdaq first (US listings), then Yahoo."""
+
     def __init__(self, cfg: Config):
         self.cfg = cfg
         self.store = Store(cfg.state_dir)
@@ -32,26 +35,62 @@ class App:
         self.fx = FxConverter(cfg.base_currency)
         self.paper = PaperBook(self.store, cfg, self.plans, self.fx, fetch=self.series)
         self.dispatcher = Dispatcher(self.store, cfg.logs_dir, cfg.timezone)
-        self._cache: dict[tuple, Series | DataError] = {}
+        self._cache: dict[tuple, object] = {}
+
+    def _first(self, key: tuple, symbol: str, from_nasdaq: Callable, from_yahoo: Callable):
+        """Try Nasdaq (when it covers the symbol), then Yahoo. Caches the result or the combined failure."""
+        if key not in self._cache:
+            attempts = ([from_nasdaq] if nasdaq.covers(symbol) else []) + [from_yahoo]
+            errors: list[DataError] = []
+            result: object = None
+            for fn in attempts:
+                try:
+                    result = fn()
+                    break
+                except DataError as e:
+                    errors.append(e)
+            if result is None:
+                first, rest = errors[0], errors[1:]
+                result = DataError(first.source, "; ".join([first.detail] + [f"fallback {e}" for e in rest]))
+            self._cache[key] = result
+        value = self._cache[key]
+        if isinstance(value, DataError):
+            raise value
+        return value
+
+    def daily(self, symbol: str) -> Series:
+        s = symbol.upper()
+        return self._first(("daily", s), s, lambda: nasdaq.fetch_daily(s), lambda: yahoo.fetch_chart(s, "2y", "1d"))
+
+    def intraday(self, symbol: str) -> Series:
+        s = symbol.upper()
+        return self._first(("intraday", s), s, lambda: nasdaq.fetch_intraday(s), lambda: yahoo.fetch_chart(s, "5d", "5m"))
+
+    def quote(self, symbol: str) -> Quote:
+        s = symbol.upper()
+        return self._first(("quote", s), s, lambda: nasdaq.fetch_quote(s), lambda: yahoo.fetch_quote(s))
+
+    def ext_hours(self, symbol: str) -> tuple[str, str]:
+        s = symbol.upper()
+        return self._first(
+            ("ext", s),
+            s,
+            lambda: (nasdaq.extended_hours(s), nasdaq.SOURCE),
+            lambda: (ext_hours_summary(yahoo.fetch_chart(s, "5d", "5m", True)), yahoo.SOURCE),
+        )
+
+    def earnings(self, symbol: str) -> tuple[list[date] | None, str]:
+        s = symbol.upper()
+
+        def from_yahoo():
+            cal = yahoo.fetch_calendar(s)
+            return (cal.earnings or None), (cal.source if cal.earnings else f"{cal.source}: no upcoming earnings date")
+
+        return self._first(("earnings", s), s, lambda: nasdaq.fetch_earnings(s), from_yahoo)
 
     def series(self, symbol: str, range_: str = "2y", interval: str = "1d", prepost: bool = False) -> Series:
-        """Yahoo first; Twelve Data as backup for daily bars. Results (and failures) are cached per run."""
-        key = (symbol.upper(), range_, interval, prepost)
-        if key not in self._cache:
-            try:
-                self._cache[key] = yahoo.fetch_chart(symbol, range_, interval, prepost)
-            except DataError as e:
-                result: Series | DataError = e
-                if interval == "1d" and twelvedata.covers(symbol):
-                    try:
-                        result = twelvedata.fetch_daily(symbol)
-                    except DataError as e2:
-                        result = DataError(e.source, f"{e.detail}; backup {e2}")
-                self._cache[key] = result
-        v = self._cache[key]
-        if isinstance(v, DataError):
-            raise v
-        return v
+        """Adapter for the paper book: daily bars, or the latest intraday prices."""
+        return self.daily(symbol) if interval == "1d" else self.intraday(symbol)
 
     def today(self) -> date:
         return local(now_utc(), self.cfg.timezone).date()
@@ -89,8 +128,8 @@ def card_context(app: App, plan: Plan, offline: bool) -> CardContext:
     earnings, e_note = None, "not checked (offline)"
     if not offline:
         try:
-            cal = yahoo.fetch_calendar(plan.ticker)
-            earnings, e_note = cal.earnings, f"{cal.source} {fmt_time(cal.fetched_at, cfg.timezone)}"
+            earnings, e_note = app.earnings(plan.ticker)
+            e_note += f", fetched {fmt_time(now_utc(), cfg.timezone)}"
         except DataError as e:
             e_note = str(e)
     return CardContext(equity, cfg.base_currency, fx, fx_note, ideas, earnings, e_note, app.today())
@@ -136,15 +175,23 @@ def _trigger(args) -> dict | None:
     return None
 
 
+def _vs(price: float, level: float) -> str:
+    return f"{pct(price, level):+.1f}%"
+
+
 # ---- commands --------------------------------------------------------------
 
 
 def cmd_init(app: App, args) -> int:
+    cfg = app.cfg
+    if not cfg.from_file:
+        print(f"No config.yaml; using built-in defaults ({cfg.base_currency}, benchmark {cfg.paper_book.benchmark}, time zone {cfg.timezone}).")
     n = app.plans.seed_from_config()
     print(f"State folder: {app.store.dir}")
-    print(f"Imported {n} swing holding(s) from config.yaml." if n else "Trade log already has entries; config.yaml swing_holdings not re-imported.")
-    if app.cfg.paper_book.enabled and app.paper.start():
-        print(f"Paper book started with {app.cfg.paper_book.starting_capital:,.2f} {app.cfg.base_currency}.")
+    if n:
+        print(f"Imported {n} swing holding(s) from config.yaml.")
+    if cfg.paper_book.enabled and app.paper.start():
+        print(f"Paper book started with {cfg.paper_book.starting_capital:,.2f} {cfg.base_currency}.")
     for msg in app.plans.config_drift():
         print(msg)
     return 0
@@ -177,7 +224,7 @@ def cmd_trade(app: App, args) -> int:
         return 0
 
     rec = app.plans.record_trade(account=acct, ticker=t, side="sell", shares=args.shares, price=args.price, currency=cur, reported_time=args.time, note=args.note or "")
-    pos = app.plans.positions("real").get((acct, t), {"shares": -args.shares})
+    pos = app.plans.positions("real")[(acct, t)]
     notes = []
     if plan is None:
         notes.append(f"No active plan for {t} in account {acct}; the sale is recorded without one.")
@@ -296,15 +343,147 @@ def cmd_risk_card(app: App, args) -> int:
     return 0
 
 
+def quote_lines(q: Quote, tz: str) -> list[str]:
+    head = f"{q.symbol}" + (f" ({q.name})" if q.name else "") + f" {q.price:,.2f}"
+    if q.change is not None:
+        head += f", {q.change:+.2f}" + (f" ({q.change_pct:+.2f}%)" if q.change_pct is not None else "")
+    out = [head]
+    detail = []
+    if q.prev_close is not None:
+        detail.append(f"prior close {q.prev_close:,.2f}")
+    if q.day_low is not None and q.day_high is not None:
+        detail.append(f"day {q.day_low:,.2f}–{q.day_high:,.2f}")
+    if q.volume is not None:
+        detail.append(f"volume {q.volume:,.0f}")
+    if q.low_52w is not None and q.high_52w is not None:
+        detail.append(f"52-week {q.low_52w:,.2f}–{q.high_52w:,.2f}")
+    if detail:
+        out.append(" · ".join(detail))
+    status = []
+    if q.market_status:
+        status.append(f"Market {q.market_status.lower()}")
+    if q.last_trade:
+        status.append(f"last trade {q.last_trade}" + (" (real-time)" if q.real_time else ""))
+    if status:
+        out.append(" · ".join(status))
+    out += [f"Other session: {x}" for x in q.extra]
+    out.append(f"Source: {q.source}, fetched {fmt_time(q.fetched_at, tz)}.")
+    return out
+
+
+def _held_lines(app: App, sym: str, price: float) -> list[str]:
+    out = []
+    plans = {(p.account, p.ticker): p for p in app.plans.active("real")}
+    for (acct, t), pos in sorted(app.plans.positions("real").items()):
+        if t != sym or pos["shares"] <= 0:
+            continue
+        line = f"You hold {pos['shares']:g} sh @ {pos['avg_cost']:.2f} ({acct}): {pct(pos['avg_cost'], price):+.1f}% vs your cost"
+        plan = plans.get((acct, t))
+        if plan and plan.stop is not None:
+            line += f" · stop {plan.stop:.2f} ({_vs(price, plan.stop)})"
+        if plan and plan.t1 is not None:
+            line += f" · T1 {plan.t1:.2f} ({_vs(price, plan.t1)})" + (" hit" if plan.t1_hit else "")
+        out.append(line)
+    pp = app.paper.state().positions.get(sym)
+    if pp:
+        out.append(f"Paper book holds {pp.shares:g} sh @ {pp.avg_local:.2f}: {pct(pp.avg_local, price):+.1f}% vs paper cost")
+    return out
+
+
+def cmd_quote(app: App, args) -> int:
+    for i, sym in enumerate(dict.fromkeys(s.upper() for s in args.tickers)):
+        if i:
+            print()
+        try:
+            q = app.quote(sym)
+        except DataError as e:
+            print(f"[{sym}] {e}")
+            continue
+        for line in quote_lines(q, app.cfg.timezone) + _held_lines(app, sym, q.price):
+            print(line)
+    print(DISCLAIMER)
+    return 0
+
+
+def cmd_holdings(app: App, args) -> int:
+    if args.paper:
+        print(app.paper.scorecard())
+        return 0
+    cfg = app.cfg
+    positions = {k: v for k, v in app.plans.positions("real").items() if v["shares"] > 0}
+    pending = [p for p in app.plans.active("real") if p.status == "pending"]
+    if not positions and not pending:
+        print("No holdings recorded yet. Tell Claude what you bought, or run: dh trade buy TICKER --shares N --price P")
+        return 0
+
+    plans = {(p.account, p.ticker): p for p in app.plans.active("real")}
+    totals: dict[str, dict[str, float]] = {}
+    gaps, sources = [], set()
+    print(f"Holdings, {fmt_time(now_utc(), cfg.timezone)}")
+    for (acct, t), pos in sorted(positions.items()):
+        cur = pos["currency"] or infer_currency(t)
+        shares, avg = pos["shares"], pos["avg_cost"]
+        parts = [f"{t} ({acct}) {shares:g} sh @ {avg:.2f} {cur}"]
+        try:
+            q = app.quote(t)
+            sources.add(q.source)
+            value, cost = shares * q.price, shares * avg
+            today = f", {q.change_pct:+.2f}% today" if q.change_pct is not None else ""
+            parts += [f"last {q.price:,.2f}{today}", f"value {value:,.2f}", f"P&L {value - cost:+,.2f} ({pct(cost, value):+.1f}%)"]
+            plan = plans.get((acct, t))
+            if plan and plan.stop is not None:
+                parts.append(f"stop {plan.stop:.2f} ({_vs(q.price, plan.stop)})")
+            if plan and plan.t1 is not None:
+                parts.append(f"T1 {plan.t1:.2f} ({_vs(q.price, plan.t1)})" + (" hit" if plan.t1_hit else ""))
+            if plan and plan.out_by:
+                parts.append(f"out by {fmt_day(plan.out_by)}")
+            tot = totals.setdefault(cur, {"value": 0.0, "cost": 0.0})
+            tot["value"] += value
+            tot["cost"] += cost
+        except DataError as e:
+            parts.append("no price")
+            gaps.append(f"[{t}] {e}")
+        print(" | ".join(parts))
+
+    for cur, tot in sorted(totals.items()):
+        line = f"Total {cur}: value {tot['value']:,.2f} | P&L {tot['value'] - tot['cost']:+,.2f} ({pct(tot['cost'], tot['value']):+.1f}%)"
+        if cur != cfg.base_currency:
+            try:
+                rate, info = app.fx.rate(cur)
+                line += f" = {tot['value'] * rate:,.2f} {cfg.base_currency} ({info.source} USD/CAD {info.rate:.4f}, {fmt_day(info.day)})"
+            except DataError as e:
+                line += f" ({cfg.base_currency} value not shown: {e})"
+        print(line)
+
+    for p in pending:
+        line = f"Idea {p.ticker} ({p.account}): {trigger_label(p.trigger)}"
+        level = p.planned_entry()
+        try:
+            q = app.quote(p.ticker)
+            sources.add(q.source)
+            line += f" | last {q.price:,.2f}" + (f" ({pct(q.price, level):+.1f}% to the trigger)" if level else "")
+        except DataError as e:
+            gaps.append(f"[{p.ticker}] {e}")
+        print(line)
+
+    for g in gaps:
+        print(g)
+    if sources:
+        print(f"Source: {', '.join(sorted(sources))} quotes. Each quote's own last-trade time: dh quote TICKER.")
+    print(DISCLAIMER)
+    return 0
+
+
 def cmd_watch(app: App, args) -> int:
     now = now_utc()
-    status, alerts, gaps = [], [], []
+    status, alerts, gaps, used = [], [], [], set()
     for p in app.plans.active("real"):
         try:
-            s = app.series(p.ticker)
+            s = app.daily(p.ticker)
         except DataError as e:
             gaps.append(f"[{p.ticker}] {e}")
             continue
+        used.add(s.source)
         line, al = check_plan(app.cfg, p, s, now)
         status.append(line)
         alerts += al
@@ -316,11 +495,11 @@ def cmd_watch(app: App, args) -> int:
         return 0
     if not args.quiet:
         if not status and not gaps:
-            print("No active real-account plans. Record trades with `dh trade` or ideas with `dh plan new`.")
+            print("No active plans in a real account. Record trades with `dh trade` or ideas with `dh plan new`.")
         for line in status:
             print(line)
         if status:
-            print(f"Source: Yahoo Finance, checked {fmt_time(now, app.cfg.timezone)}.")
+            print(f"Source: {', '.join(sorted(used))}, checked {fmt_time(now, app.cfg.timezone)}.")
     for a in new:
         print("\n" + a.text())
     for g in gaps:
@@ -342,7 +521,7 @@ def _analytics_symbols(app: App) -> list[str]:
 def _run_analytics(app: App, sym: str, now: datetime) -> tuple[Analytics | None, list[str]]:
     gaps: list[str] = []
     try:
-        daily = app.series(sym)
+        daily = app.daily(sym)
     except DataError as e:
         return None, [f"[{sym}] {e}"]
     benches = {}
@@ -350,16 +529,16 @@ def _run_analytics(app: App, sym: str, now: datetime) -> tuple[Analytics | None,
         if b == sym:
             continue
         try:
-            benches[b] = app.series(b)
+            benches[b] = app.daily(b)
         except DataError as e:
             gaps.append(f"[{sym}] relative strength vs {b} skipped: {e}")
+    ext = ext_src = None
     try:
-        intra = app.series(sym, "5d", "5m", True)
+        ext, ext_src = app.ext_hours(sym)
     except DataError as e:
-        intra = None
-        gaps.append(f"[{sym}] extended-hours volume skipped: {e}")
+        gaps.append(f"[{sym}] extended-hours data skipped: {e}")
     try:
-        return compute_analytics(app.cfg, daily, now, benches, intra), gaps
+        return compute_analytics(app.cfg, daily, now, benches, ext, ext_src), gaps
     except ValueError as e:
         return None, gaps + [f"[{sym}] {e}"]
 
@@ -368,7 +547,7 @@ def cmd_analytics(app: App, args) -> int:
     now = now_utc()
     symbols = [s.upper() for s in args.tickers] or _analytics_symbols(app)
     if not symbols:
-        return fail("No tickers given and none in plans or watchlist.")
+        return fail("No tickers given, and there are no plans or watchlist names. Try: dh analytics NVDA")
     results, gaps = [], []
     for sym in symbols:
         a, g = _run_analytics(app, sym, now)
@@ -386,36 +565,44 @@ def cmd_analytics(app: App, args) -> int:
     return 0
 
 
-def _cross_check(sym: str, ys: Series, now: datetime) -> str | None:
-    """Compare Yahoo's last final close with Twelve Data's; report gaps of 0.1% or more.
+def _cross_check(sym: str, primary: Series, now: datetime) -> tuple[str | None, str | None]:
+    """Compare the primary source's last official close with the other source's.
 
-    Skipped when no Twelve Data key is set.
+    Returns (gap message, skip reason); both None when the closes agree within 0.1%.
     """
-    if ys.source != yahoo.SOURCE or not twelvedata.covers(sym) or not twelvedata.api_key():
-        return None
-    final = [b for b in ys.bars if is_final(ys, b, now)]
+    final = [b for b in primary.bars if is_final(primary, b, now)]
     if not final:
-        return None
-    yb = final[-1]
+        return None, None
+    pb = final[-1]
     try:
-        ts = twelvedata.fetch_daily(sym)
+        if primary.source == nasdaq.SOURCE:
+            other = yahoo.fetch_chart(sym, "1mo", "1d")
+        elif nasdaq.covers(sym):
+            other = nasdaq.fetch_daily(sym)
+        else:
+            return None, None
     except DataError as e:
-        return f"[{sym}] price cross-check skipped: {e}"
-    tb = next((b for b in reversed(ts.bars) if b.day == yb.day), None)
-    if tb is None:
-        return f"[{sym}] price cross-check: Twelve Data has no {fmt_day(yb.day)} bar yet."
-    gap = pct(yb.close, tb.close)
+        return None, str(e)
+    ob = next((b for b in reversed(other.bars) if b.day == pb.day and not b.provisional), None)
+    if ob is None:
+        return None, f"{other.source} has no {fmt_day(pb.day)} close yet"
+    gap = pct(pb.close, ob.close)
     if abs(gap) >= 0.1:
-        return f"[{sym}] Price gap on {fmt_day(yb.day)}: Yahoo close {yb.close:.2f} vs Twelve Data {tb.close:.2f} ({gap:+.2f}%). Using Yahoo (primary)."
-    return None
+        return (
+            f"[{sym}] Price gap on {fmt_day(pb.day)}: {primary.source} close {pb.close:.2f} vs {other.source} {ob.close:.2f} "
+            f"({gap:+.2f}%). Using {primary.source} (primary).",
+            None,
+        )
+    return None, None
 
 
 def cmd_close_check(app: App, args) -> int:
     now = now_utc()
     status, alerts, gaps, checks = [], [], [], []
+    skipped: dict[str, list[str]] = {}
     for p in app.plans.active("real"):
         try:
-            s = app.series(p.ticker)
+            s = app.daily(p.ticker)
         except DataError as e:
             gaps.append(f"[{p.ticker}] {e}")
             continue
@@ -423,9 +610,13 @@ def cmd_close_check(app: App, args) -> int:
         status.append(line)
         alerts += al
         if p.status == "open":
-            x = _cross_check(p.ticker, s, now)
-            if x:
-                checks.append(x)
+            msg, skip = _cross_check(p.ticker, s, now)
+            if msg:
+                checks.append(msg)
+            if skip:
+                skipped.setdefault(skip, []).append(p.ticker)
+    for reason, tickers in skipped.items():
+        checks.append(f"Price cross-check skipped for {', '.join(tickers)}: {reason}")
 
     flagged, open_sessions = 0, []
     symbols = _analytics_symbols(app)
@@ -455,7 +646,7 @@ def cmd_close_check(app: App, args) -> int:
         print(line)
     print(f"Analytics run on {len(symbols)} symbol(s); {flagged} rule match(es).")
     if open_sessions:
-        print(f"Session not closed yet for: {', '.join(open_sessions)}. Close-based checks wait for the official close.")
+        print(f"No official close yet for: {', '.join(open_sessions)}. Close-based checks wait for it.")
     for c in checks:
         print(c)
     for a in new:
@@ -482,7 +673,7 @@ def cmd_paper(app: App, args) -> int:
             entry = price
             if entry is None:
                 try:
-                    entry = app.series(t).bars[-1].close
+                    entry = app.quote(t).price
                 except DataError as e:
                     return fail(f"{e}. Pass --shares.")
             try:
@@ -560,19 +751,27 @@ def _trigger_args(p: argparse.ArgumentParser, required: bool) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="dh", description="Diamond Hands: facts-first swing-trading partner.")
-    p.add_argument("--config", type=Path, default=None, help="path to config.yaml (default: repo root)")
+    p.add_argument("--config", type=Path, default=None, help="path to config.yaml (optional; default: repo root)")
     p.add_argument("--version", action="version", version=__version__)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("init", help="create state/, import config swing holdings once, start the paper book")
+    s = sub.add_parser("init", help="create state/, import config.yaml swing holdings once, start the paper book")
     s.set_defaults(func=cmd_init)
+
+    s = sub.add_parser("quote", help="current price of any ticker, plus your holding if you have one")
+    s.add_argument("tickers", nargs="+")
+    s.set_defaults(func=cmd_quote)
+
+    s = sub.add_parser("holdings", help="what you hold, priced now, with P&L and distance to stop and T1")
+    s.add_argument("--paper", action="store_true", help="show the paper book instead")
+    s.set_defaults(func=cmd_holdings)
 
     s = sub.add_parser("trade", help="record a trade you made in a real account")
     s.add_argument("side", choices=["buy", "sell"])
     s.add_argument("ticker")
     s.add_argument("--shares", type=float, required=True)
     s.add_argument("--price", type=float, required=True)
-    s.add_argument("--account", default="real", help="account label, e.g. TFSA (default: real)")
+    s.add_argument("--account", default="real", help="account label, e.g. IRA or TFSA (default: real)")
     s.add_argument("--time", help="when you traded, as reported (e.g. '2026-11-14 10:32')")
     s.add_argument("--currency", help="override the currency inferred from the ticker")
     s.add_argument("--note")

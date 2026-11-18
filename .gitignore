@@ -9,5 +9,3 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# API keys
-.env

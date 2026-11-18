@@ -32,11 +32,11 @@ def session() -> requests.Session:
     return _session
 
 
-def get(url: str, source: str, params: dict | None = None, timeout: float = 15, retries: int = 2) -> requests.Response:
+def get(url: str, source: str, params: dict | None = None, headers: dict | None = None, timeout: float = 15, retries: int = 2) -> requests.Response:
     last = "unknown error"
     for attempt in range(retries + 1):
         try:
-            r = session().get(url, params=params, timeout=timeout)
+            r = session().get(url, params=params, headers=headers, timeout=timeout)
         except requests.RequestException as e:
             last = type(e).__name__
         else:

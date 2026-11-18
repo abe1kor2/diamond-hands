@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from ..models import Bar, Series
+from ..models import Bar, Quote, Series
 from ..timeutil import from_unix, now_utc
 from .http import DataError, get, session
 
@@ -61,7 +61,37 @@ def fetch_chart(symbol: str, range_: str = "2y", interval: str = "1d", prepost: 
         bars = _dedupe_days(bars)
     if not bars:
         raise DataError(SOURCE, f"{symbol}: no bars returned")
-    return Series(symbol.upper(), SOURCE, now_utc(), meta.get("currency"), tzname, bars, meta)
+    as_of = from_unix(meta["regularMarketTime"]) if meta.get("regularMarketTime") else None
+    return Series(symbol.upper(), SOURCE, now_utc(), meta.get("currency"), tzname, bars, meta, as_of)
+
+
+def fetch_quote(symbol: str) -> Quote:
+    s = fetch_chart(symbol, "1d", "5m")
+    m = s.meta
+    price = m.get("regularMarketPrice")
+    if price is None:
+        raise DataError(SOURCE, f"{symbol}: no market price")
+    prev = m.get("previousClose") or m.get("chartPreviousClose")
+    change = price - prev if prev else None
+    t = s.market_time()
+    return Quote(
+        symbol=s.symbol,
+        name=m.get("longName") or m.get("shortName"),
+        price=float(price),
+        change=change,
+        change_pct=change / prev * 100 if change is not None else None,
+        prev_close=float(prev) if prev else None,
+        day_low=m.get("regularMarketDayLow"),
+        day_high=m.get("regularMarketDayHigh"),
+        volume=m.get("regularMarketVolume"),
+        low_52w=m.get("fiftyTwoWeekLow"),
+        high_52w=m.get("fiftyTwoWeekHigh"),
+        market_status=None,
+        last_trade=t.astimezone(ZoneInfo(s.exchange_tz)).strftime("%b %-d, %Y %-I:%M %p %Z") if t else None,
+        extra=[],
+        source=SOURCE,
+        fetched_at=s.fetched_at,
+    )
 
 
 def _at(col: list, i: int):

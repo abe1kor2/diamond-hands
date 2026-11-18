@@ -23,6 +23,8 @@ Run every command from the diamond-hands repo root as `uv run dh <command>`. Rel
 
 | Command | What it gives you |
 |---|---|
+| `dh quote TICKER [TICKER ...]` | Current price of any ticker, plus the trader's position if they hold it |
+| `dh holdings [--paper]` | Every holding priced now: value, P&L, distance to stop and T1 |
 | `dh trade buy\|sell TICKER --shares N --price P [--stop S --t1 T --out-by YYYY-MM-DD] [--account A] [--time "..."]` | Records a reported fill, updates the plan, prints the risk card |
 | `dh plan new TICKER --limit X \| --close-above X \| --zone LO HI --stop S --t1 T --out-by D` | Pending idea plus risk card |
 | `dh plan update TICKER [--stop S] [--t1 T] [--out-by D] --reason "..."` | New plan entry; lowering a stop needs `--override` |
@@ -33,13 +35,15 @@ Run every command from the diamond-hands repo root as `uv run dh <command>`. Rel
 | `dh paper buy\|sell\|cancel\|process\|scorecard\|ledger` | Paper book |
 | `dh fx` | Bank of Canada USD/CAD |
 
-## Load first
-- `config.yaml` at the repo root: watchlist, core holdings, rules, thresholds. If it's missing, tell the trader to copy `config.example.yaml` and run `uv run dh init`.
-- `state/holdings.yaml` is generated from the trade log. Never edit it; record changes with `dh trade`.
+## Setup
+None needed. Without a `config.yaml`, `dh` uses built-in defaults: the trading rules in `config.example.yaml`, US markets, USD, SPY as the benchmark, and the computer's time zone. A `config.yaml` at the repo root only overrides those (watchlist, account equity, base currency, thresholds).
+- `state/` is created on first use. `state/holdings.yaml` is generated from the trade log; never edit it, record changes with `dh trade`.
+- Prices come from Nasdaq for US stocks and ETFs, with Yahoo Finance as the fallback (and the only source for TSX tickers). Neither needs a key.
 
 ## Routing
 | The trader asks about… | Use sub-skill |
 |---|---|
+| what they hold, how positions are doing, a ticker's current price | `holdings` |
 | mood, what people are saying, buy the dip vs sell the top | `sentiment` |
 | volume, candles, trend, moving averages, RSI, support/resistance | `analytics` |
 | news, filings, CEO changes, lawsuits, analyst moves | `news-watch` |
@@ -70,5 +74,5 @@ Use: "matched your rule," "closed below," "touched," "is X% from," "volume was,"
 Avoid: "you should," "I recommend," "don't buy," "good entry," "looks weak," "bullish setup" (as a call), "guaranteed," "safe."
 
 ## Build status
-**Built:** trade-log, trade-plan, level-watch, analytics, paper-book, after-close (except the calendar heads-up).
+**Built:** holdings, trade-log, trade-plan, level-watch, analytics, paper-book, after-close (except the calendar heads-up).
 **Not built yet:** news-watch, sentiment and market mood, calendar beyond earnings-inside-hold, setup-odds. When a request needs one of these, say "<sub-skill>: not built yet" and carry on with the rest. Don't fill in with web searches or estimates.

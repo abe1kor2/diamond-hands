@@ -2,22 +2,23 @@
 # Before enabling:
 #   1. Set DH to this repo's absolute path and PATH to include `claude` and `uv`
 #      (cron doesn't expand $HOME or ~ in these assignments).
-#   2. Keep CRON_TZ equal to config.yaml `timezone`.
-#   3. Let scheduled runs call the CLI without prompting: add "Bash(uv run dh:*)" to
+#   2. Let scheduled runs call the CLI without prompting: add "Bash(uv run dh:*)" to
 #      permissions.allow in .claude/settings.local.json.
+# Times below are US Eastern (market time). The after-close job runs at 6 PM so the
+# official close has been published.
 # Market-hours jobs don't skip exchange holidays yet; on a holiday they find nothing new and stay quiet.
-CRON_TZ=America/St_Johns
+CRON_TZ=America/New_York
 PATH=/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin
 DH=/path/to/diamond-hands
 
-0 9 * * 1-5      cd $DH && claude --plugin-dir . -p "/diamond-hands:brief"   >> logs/brief.log 2>&1
-0 11-17 * * 1-5  cd $DH && claude --plugin-dir . -p "/diamond-hands:levels scheduled run: stay quiet if nothing matched" >> logs/hourly.log 2>&1
-45 17 * * 1-5    cd $DH && claude --plugin-dir . -p "/diamond-hands:close"   >> logs/close.log 2>&1
+0 8 * * 1-5      cd $DH && claude --plugin-dir . -p "/diamond-hands:brief"   >> logs/brief.log 2>&1
+30 10-15 * * 1-5 cd $DH && claude --plugin-dir . -p "/diamond-hands:levels scheduled run: stay quiet if nothing matched" >> logs/hourly.log 2>&1
+0 18 * * 1-5     cd $DH && claude --plugin-dir . -p "/diamond-hands:close"   >> logs/close.log 2>&1
 0 10 * * 6       cd $DH && claude --plugin-dir . -p "/diamond-hands:week"    >> logs/week.log 2>&1
 
 # Enable once news-watch and sentiment are built:
-# 0 11-17 * * 1-5  cd $DH && claude --plugin-dir . -p "/diamond-hands:news scheduled run: stay quiet if nothing matched" >> logs/news.log 2>&1
+# 30 10-15 * * 1-5 cd $DH && claude --plugin-dir . -p "/diamond-hands:news scheduled run: stay quiet if nothing matched" >> logs/news.log 2>&1
 # 0 */3 * * *      cd $DH && claude --plugin-dir . -p "/diamond-hands:sentiment scheduled sweep: alert only on a shift or spike" >> logs/sentiment.log 2>&1
 
 # Cheaper alternative for the hourly watch (no Claude call, same alerts):
-# 0 11-17 * * 1-5  cd $DH && uv run dh watch --quiet >> logs/hourly.log 2>&1
+# 30 10-15 * * 1-5 cd $DH && uv run dh watch --quiet >> logs/hourly.log 2>&1

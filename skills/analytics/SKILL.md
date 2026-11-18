@@ -5,7 +5,7 @@ description: Price, volume, and candle analytics for a ticker. Use when asked ab
 
 # Analytics
 
-Run `uv run dh analytics TICKER [TICKER ...]` (no tickers = every active plan plus the watchlist). It uses daily bars and 5-minute bars with pre/post market from Yahoo Finance, with Twelve Data as the backup for daily US bars when a key is set.
+Run `uv run dh analytics TICKER [TICKER ...]` (no tickers = every active plan plus the watchlist). It uses two years of daily bars plus pre-market and after-hours trading, from Nasdaq for US listings with Yahoo Finance as the fallback. During the session, today's bar is live and provisional; close-based flags wait for the official close.
 
 When the trader asks for one section only (`/volume`, `/candles`), relay just those lines.
 

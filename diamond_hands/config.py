@@ -1,7 +1,12 @@
-"""Loads config.yaml (personal settings) into typed objects."""
+"""Loads config.yaml (optional personal settings) into typed objects.
+
+With no config.yaml, every setting falls back to a built-in default: the trading rules
+below, US markets, USD, SPY as the benchmark, and the computer's own time zone.
+"""
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field, fields
 from datetime import date
 from pathlib import Path
@@ -59,7 +64,7 @@ class Rules:
 class PaperCfg:
     enabled: bool = True
     starting_capital: float = 100_000
-    benchmark: str = "VFV.TO"
+    benchmark: str = "SPY"
 
 
 @dataclass
@@ -83,10 +88,11 @@ class Config:
     rules: Rules
     paper_book: PaperCfg
     alerts: AlertCfg
-    us_index: str = "^GSPC"
-    ca_index: str = "^GSPTSE"
+    us_index: str = "SPY"
+    ca_index: str = "XIU.TO"
     sector_index: dict[str, str] = field(default_factory=dict)
     root: Path = ROOT
+    from_file: bool = False
 
     @property
     def state_dir(self) -> Path:
@@ -145,21 +151,50 @@ def _holding(raw: dict, i: int) -> SwingHolding:
     )
 
 
-def load_config(path: Path | str | None = None) -> Config:
-    path = Path(path) if path else ROOT / "config.yaml"
-    if not path.exists():
-        raise ConfigError(f"{path} not found. Copy config.example.yaml to config.yaml and fill in your settings.")
-    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(raw, dict):
-        raise ConfigError(f"{path} must be a YAML mapping")
-
-    tz = str(raw.get("timezone") or "America/St_Johns")
+def _valid_tz(name: str | None) -> bool:
+    if not name:
+        return False
     try:
-        ZoneInfo(tz)
-    except Exception as e:  # noqa: BLE001 - zoneinfo raises several types
-        raise ConfigError(f"unknown timezone {tz!r}") from e
+        ZoneInfo(name)
+        return True
+    except Exception:  # noqa: BLE001 - zoneinfo raises several types
+        return False
 
-    base = str(raw.get("base_currency") or "CAD").upper()
+
+def system_timezone() -> str:
+    """The computer's IANA time zone (TZ, then /etc/localtime), else US Eastern."""
+    tz = os.environ.get("TZ", "").lstrip(":")
+    if _valid_tz(tz):
+        return tz
+    try:
+        target = os.path.realpath("/etc/localtime")
+    except OSError:
+        target = ""
+    if "zoneinfo/" in target:
+        name = target.split("zoneinfo/", 1)[1]
+        if _valid_tz(name):
+            return name
+    return "America/New_York"
+
+
+def load_config(path: Path | str | None = None) -> Config:
+    """Load config.yaml. An explicit path must exist; the default one is optional."""
+    explicit = path is not None
+    path = Path(path) if explicit else ROOT / "config.yaml"
+    if path.exists():
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(raw, dict):
+            raise ConfigError(f"{path} must be a YAML mapping")
+    elif explicit:
+        raise ConfigError(f"{path} not found")
+    else:
+        raw = {}
+
+    tz = str(raw.get("timezone") or system_timezone())
+    if not _valid_tz(tz):
+        raise ConfigError(f"unknown timezone {tz!r}")
+
+    base = str(raw.get("base_currency") or "USD").upper()
     if base not in ("CAD", "USD"):
         raise ConfigError("base_currency must be CAD or USD (FX comes from the Bank of Canada USD/CAD rate)")
 
@@ -171,7 +206,7 @@ def load_config(path: Path | str | None = None) -> Config:
 
     return Config(
         timezone=tz,
-        markets=[str(m) for m in raw.get("markets") or []],
+        markets=[str(m) for m in raw.get("markets") or ["NYSE", "NASDAQ"]],
         base_currency=base,
         fx_source=str(raw.get("fx_source") or "bank_of_canada"),
         account_equity=float(eq) if eq not in (None, "") else None,
@@ -182,11 +217,12 @@ def load_config(path: Path | str | None = None) -> Config:
         paper_book=PaperCfg(
             enabled=bool(paper.get("enabled", True)),
             starting_capital=float(paper.get("starting_capital", 100_000)),
-            benchmark=str(paper.get("benchmark") or "VFV.TO").upper(),
+            benchmark=str(paper.get("benchmark") or "SPY").upper(),
         ),
         alerts=AlertCfg(**{k: float(v) for k, v in alerts.items() if k in alert_names}),
-        us_index=str(bm.get("us_index") or "^GSPC"),
-        ca_index=str(bm.get("ca_index") or "^GSPTSE"),
+        us_index=str(bm.get("us_index") or "SPY"),
+        ca_index=str(bm.get("ca_index") or "XIU.TO"),
         sector_index={str(k).upper(): str(v) for k, v in (bm.get("sector") or {}).items()},
         root=path.resolve().parent,
+        from_file=path.exists(),
     )

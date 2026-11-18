@@ -138,7 +138,14 @@ def ext_hours_summary(intra: Series) -> str:
     return "; ".join(out) if out else "no extended-hours volume reported"
 
 
-def compute(cfg: Config, daily: Series, now: datetime | None = None, benches: dict[str, Series] | None = None, intraday: Series | None = None) -> Analytics:
+def compute(
+    cfg: Config,
+    daily: Series,
+    now: datetime | None = None,
+    benches: dict[str, Series] | None = None,
+    ext_hours: str | None = None,
+    ext_source: str | None = None,
+) -> Analytics:
     now = now or now_utc()
     bars = daily.bars
     if len(bars) < 2:
@@ -214,9 +221,11 @@ def compute(cfg: Config, daily: Series, now: datetime | None = None, benches: di
                 rs.append({"vs": name, "days": n, "ticker_pct": r[0], "bench_pct": r[1], "diff": r[0] - r[1]})
 
     sources = [f"{daily.source} daily bars, fetched {fmt_time(daily.fetched_at, cfg.timezone)}"]
+    if last.provisional:
+        sources[0] += f" (today's bar is live and provisional until {daily.source} publishes the official close)"
     sources += [f"{bs.source} {name} daily bars" for name, bs in (benches or {}).items()]
-    if intraday:
-        sources.append(f"{intraday.source} 5-minute bars incl. pre/post")
+    if ext_hours and ext_source:
+        sources.append(f"{ext_source} extended-hours data")
 
     return Analytics(
         symbol=daily.symbol,
@@ -242,7 +251,7 @@ def compute(cfg: Config, daily: Series, now: datetime | None = None, benches: di
         range_vs_atr=(last.high - last.low) / atr_prev if atr_prev else None,
         rsi14=wilder_rsi(closes, 14),
         rel_strength=rs,
-        ext_hours=ext_hours_summary(intraday) if intraday else None,
+        ext_hours=ext_hours,
         flags=flags,
         sources=sources,
         notes=notes,

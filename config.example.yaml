@@ -1,49 +1,36 @@
-# Copy this file to config.yaml and fill in your own values.
-# config.yaml is git-ignored, so your positions never get pushed.
-# Every number below is an EXAMPLE placeholder, not real data.
+# OPTIONAL. Diamond Hands runs with no config at all; every value below is the
+# built-in default unless marked "example". To change anything, copy this file
+# to config.yaml (git-ignored) and keep only the lines you want to override.
 
-timezone: America/St_Johns          # all times reported in this zone
-markets: [TSX, NYSE, NASDAQ]
-base_currency: CAD                  # CAD or USD
-fx_source: bank_of_canada           # for USD->CAD conversion
+# timezone: America/New_York        # default: your computer's time zone
+markets: [NYSE, NASDAQ]
+base_currency: USD                  # USD or CAD (CAD converts at the Bank of Canada rate)
 
-# Equity of your real swing account, in base_currency. Used for the risk card's
-# "% of equity", size check and risk check. Leave blank and those checks show "?".
-account_equity: 50000
+# Equity of your real trading account, in base_currency. Enables the risk card's
+# "% of equity", size check and risk check; without it those checks show "?".
+# account_equity: 50000             # example
 
-core_holdings:                      # long-term, never traded, fund-level news only
-  - XEQT.TO
-  - VEQT.TO
-  - VFV.TO
+core_holdings: []                   # long-term funds, never traded; fund-level news only. Example: [VTI, VXUS]
 
-# Read ONCE by `dh init` to seed the append-only trade log (state/plans.jsonl).
-# After that, report trades with `dh trade buy|sell ...`; state/holdings.yaml
-# is regenerated from the log.
-swing_holdings:
-  - ticker: NVDA
-    shares: 97
-    avg_cost: 35.29
-    stop_close_below: 31.80
-    target_1: 39.00                 # sell half here
-    out_by: 2026-12-11
-    entry_date: 2026-11-02          # optional; used for hold-length checks
-    account: real                   # optional label (e.g. TFSA, RRSP); "paper" is reserved
+watchlist: []                       # example: [AMD, AVGO, MRVL, ARM, TSM, QCOM, INTC, MU]
 
-watchlist: [AMD, AVGO, MRVL, ARM, TSM, QCOM, INTC, MU]   # competitors / ideas
+# Read ONCE by `dh init` to seed the trade log. Usually easier: tell Claude what you
+# hold, or run `dh trade buy TICKER --shares N --price P`.
+swing_holdings: []
+# swing_holdings:                   # example
+#   - ticker: NVDA
+#     shares: 20
+#     avg_cost: 150.00
+#     stop_close_below: 138.00
+#     target_1: 166.00              # sell half here
+#     out_by: 2026-12-31
+#     entry_date: 2026-11-17        # optional; used for hold-length checks
+#     account: IRA                  # optional label; "paper" is reserved
 
-benchmarks:                         # for relative strength
-  us_index: ^GSPC
-  ca_index: ^GSPTSE
-  sector:                           # optional per-ticker sector index
-    NVDA: ^SOX
-    AMD: ^SOX
-    AVGO: ^SOX
-    MRVL: ^SOX
-    ARM: ^SOX
-    TSM: ^SOX
-    QCOM: ^SOX
-    INTC: ^SOX
-    MU: ^SOX
+benchmarks:                         # ETFs, so every price source carries them
+  us_index: SPY
+  ca_index: XIU.TO
+  sector: {}                        # optional per-ticker sector ETF, e.g. {NVDA: SOXX, AMD: SOXX}
 
 rules:
   hold_weeks: [4, 8]
@@ -61,7 +48,7 @@ rules:
 paper_book:
   enabled: true
   starting_capital: 100000
-  benchmark: VFV.TO                 # yardstick only
+  benchmark: SPY                    # yardstick only
 
 alerts:
   near_stop_band_pct: 1.5
